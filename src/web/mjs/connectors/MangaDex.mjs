@@ -9,136 +9,217 @@ export default class MangaDex extends Connector {
         super.label = 'MangaDex';
         this.tags = [ 'manga', 'high-quality', 'multi-lingual' ];
         this.url = 'https://mangadex.org';
-        this.api = 'https://api.mangadex.org/v2/';
-        this.requestOptions.headers.set('x-cookie', 'mangadex_h_toggle=1; mangadex_title_mode=2');
+        this.api = 'https://api.mangadex.org';
         this.requestOptions.headers.set('x-referer', this.url);
-        this.licensedChapterGroups = [
-            9097 // MangaPlus
-        ];
-        this.serverPrimary = 'https://s2.mangadex.org/data/';
-        this.serverSecondary = 'https://s5.mangadex.org/data/';
-        this.serverNetwork = [];
-
-        // Private members for internal use that can be configured by the user through settings menu (set to undefined or false to hide from settings menu!)
+        this.requestOptions.headers.set('x-sec-ch-ua', '" Not A;Brand";v="99", "Chromium";v="96", "Google Chrome";v="96"');
         this.config = {
-            throttle: {
-                label: 'Throttle Requests [ms]',
-                description: 'Enter the timespan in [ms] to delay consecuitive HTTP requests.\nThe website may ban your IP for to many consecuitive requests.',
+            throttleRequests: {
+                label: 'Throttle API Requests [ms]',
+                description: 'Enter the timespan in [ms] to delay consecuitive requests to the api.',
                 input: 'numeric',
-                min: 500,
+                min: 100,
+                max: 10000,
+                value: 2000
+            },
+            throttle: {
+                label: 'Throttle Image Requests [ms]',
+                description: 'Enter the timespan in [ms] to delay consecuitive HTTP requests.\nThe website may block images for to many consecuitive requests.',
+                input: 'numeric',
+                min: 50,
                 max: 5000,
-                value: 2500
+                value: 500
             }
         };
+        this.licensedChapterGroups = [
+            '4f1de6a2-f0c5-4ac5-bce5-02c7dbb67deb', // MangaPlus
+            '8d8ecf83-8d42-4f8c-add8-60963f9f28d9' // Comikey
+        ];
+        this.serverNetwork = [
+            'https://s2.mangadex.org/data/',
+            'https://s5.mangadex.org/data/',
+            'https://uploads.mangadex.org/data/'
+        ];
     }
 
     async _initializeConnector() {
-        // TODO: determine seed from remote service?
-        this.serverNetwork.push('https://reh3tgm2rs8sr.xnvda7fch4zhr.mangadex.network:443/data/');
+        //this.serverNetwork.push('https://reh3tgm2rs8sr.xnvda7fch4zhr.mangadex.network/data/');
+        //this.serverNetwork.push('https://bddhaec337xvm.xnvda7fch4zhr.mangadex.network/data/');
+        this.serverNetwork.push('https://cache.ayaya.red/mdah/data/');
         console.log(`Added Network Seeds '[ ${this.serverNetwork.join(', ')} ]' to ${this.label}`);
-        let uri = new URL(this.url);
-        let request = new Request(uri.href, this.requestOptions);
+        const request = new Request(this.url, this.requestOptions);
         return Engine.Request.fetchUI(request, '');
     }
 
+    canHandleURI(uri) {
+        // See: https://www.reddit.com/r/mangadex/comments/nn584s/list_of_appssites_that_currently_use_the_mangadex/
+        return [
+            /https?:\/\/mangadex\.org\/title\//,
+            /https?:\/\/mangastack\.cf\/manga\//,
+            /https?:\/\/manga\.ayaya\.red\/manga\//,
+            /https?:\/\/(www\.)?chibiview\.app\/manga\//,
+            /https?:\/\/cubari\.moe\/read\/mangadex\//
+        ].some(regex => regex.test(uri.href));
+    }
+
     async _getMangaFromURI(uri) {
-        let request = new Request(uri, this.requestOptions);
-        let data = await this.fetchDOM(request, 'div.card h6.card-header span.mx-1', 3);
-        let id = uri.pathname.match(/\/(\d+)\/?/)[1];
-        let title = data[0].innerText.trim();
-        return new Manga(this, id, title);
+        // NOTE: The MangaDex website is still down, but there are some provisional frontends which can be used for search, copy & paste
+        const regexGUID = /[a-fA-F0-9]{8}-([a-fA-F0-9]{4}-){3}[a-fA-F0-9]{12}/;
+        const id = (uri.pathname.match(regexGUID) || uri.hash.match(regexGUID))[0].toLowerCase();
+        const request = new Request(new URL('/manga/' + id, this.api), this.requestOptions);
+        const {data} = await this.fetchJSON(request);
+        return new Manga(this, id, data.attributes.title.en || Object.values(data.attributes.title).shift());
     }
 
     async _getMangas() {
         let mangaList = [];
-        for(let page = 1, run = true; run; page++) {
-            await this.wait(this.config.throttle.value);
-            let mangas = await this._getMangasFromPage(page);
-            mangas.length > 0 ? mangaList.push(...mangas) : run = false;
-        }
-        return mangaList;
-    }
+        let first10k = await this._getMangasFromPages(0, 99);
+        mangaList = [...mangaList, ...first10k.data];
+        let nextAt = first10k.nextAt;
 
-    async _getMangasFromPage(page) {
-        let request = new Request(new URL(`/titles/2/${page}/`, this.url), this.requestOptions);
-        let data = await this.fetchDOM(request, 'div.manga-entry div.row div.text-truncate a.manga_title');
-        return data.map(element => {
-            this.cfMailDecrypt(element);
+        for (let i = 1; i <= first10k.total / 10000; i += 1) {
+            let first100of10k = await this._getMangasFromPages(0, 0, nextAt);
+            mangaList = [...mangaList, ...first100of10k.data.slice(1)];
+            let pages = Math.min(Math.floor(first100of10k.total / 100), 99);
+            if (pages > 0) {
+                let data = await this._getMangasFromPages(1, pages, nextAt);
+                mangaList = [...mangaList, ...data.data];
+                nextAt = data.nextAt;
+            }
+        }
+        return mangaList.map(ele => {
             return {
-                id: element.href.match(/\/(\d+)\//)[1],
-                title: element.text.trim()
+                id: ele.id,
+                title: (ele.attributes.title.en || Object.values(ele.attributes.title).shift()).trim()
             };
         });
     }
 
+    async _getMangasFromPages(start, pages, nextAt) {
+        let tmp = [];
+        let data100;
+        for (let page = start; page <= pages; page += 1) {
+            const uri = new URL('/manga', this.api);
+            uri.searchParams.set('limit', 100);
+            uri.searchParams.set('offset', 100 * page);
+            uri.searchParams.set('order[createdAt]', 'asc');
+            uri.searchParams.append('contentRating[]', 'safe');
+            uri.searchParams.append('contentRating[]', 'suggestive');
+            uri.searchParams.append('contentRating[]', 'erotica');
+            uri.searchParams.append('contentRating[]', 'pornographic');
+            if (nextAt) uri.searchParams.set('createdAtSince', nextAt);
+            const request = new Request(uri, this.requestOptions);
+            data100 = await this.fetchJSON(request, 3);
+            await this.wait(this.config.throttleRequests.value);
+            tmp = [...tmp, ...data100.data];
+        }
+        return {
+            data: tmp,
+            nextAt: data100.data.pop().attributes.createdAt.replace('+00:00', ''),
+            total: data100.total
+        };
+    }
+
     async _getChapters(manga) {
-        const uri = new URL(`manga/${this._migratedMangaID(manga.id)}/chapters`, this.api);
-        const request = new Request(uri);
-        const data = await this.fetchJSON(request, 3);
-        return data.data.chapters
-            .filter(chapter => !this.licensedChapterGroups.some(id => chapter.groups.includes(id)))
-            .map(chapter => {
-                let title = '';
-                if(chapter.volume) { // => string, not a number
-                    title += 'Vol.' + this._padNum(chapter.volume, 2);
-                }
-                if(chapter.chapter) { // => string, not a number
-                    title += ' Ch.' + this._padNum(chapter.chapter, 4);
-                }
-                if(chapter.title) {
-                    title += (title ? ' - ' : '') + chapter.title;
-                }
-                if(chapter.language) {
-                    title += ' (' + chapter.language + ')';
-                }
-                if(chapter.groups.length) {
-                    const getGroup = groupID => {
-                        const group = data.data.groups.find(g => g.id === groupID);
-                        return group ? group.name : 'unknown';
-                    };
-                    title += ' [' + chapter.groups.map(getGroup).join(', ') + ']';
-                }
+        let chapterList = [];
+        for(let page = 0, run = true; run; page++) {
+            let chapters = await this._getChaptersFromPage(manga, page);
+            chapters.length > 0 ? chapterList.push(...chapters) : run = false;
+        }
+        return chapterList;
+    }
+
+    async _getChaptersFromPage(manga, page) {
+        await this.wait(this.config.throttleRequests.value);
+        const uri = new URL('/chapter', this.api);
+        uri.searchParams.set('limit', 100);
+        uri.searchParams.set('offset', 100 * page);
+        uri.searchParams.append('contentRating[]', 'safe');
+        uri.searchParams.append('contentRating[]', 'suggestive');
+        uri.searchParams.append('contentRating[]', 'erotica');
+        uri.searchParams.append('contentRating[]', 'pornographic');
+        uri.searchParams.set('manga', manga.id);
+        const request = new Request(uri, this.requestOptions);
+        const {data} = await this.fetchJSON(request, 3);
+        const groupMap = await this._getScanlationGroups(data);
+        return !data ? [] : data.map(result => {
+            let title = '';
+            if(result.attributes.volume) {
+                title += 'Vol.' + this._padNum(result.attributes.volume, 2);
+            }
+            if(result.attributes.chapter) {
+                title += ' Ch.' + this._padNum(result.attributes.chapter, 4);
+            }
+            if(result.attributes.title) {
+                title += (title ? ' - ' : '') + result.attributes.title;
+            }
+            if(result.attributes.translatedLanguage) {
+                title += ' (' + result.attributes.translatedLanguage + ')';
+            }
+            const groups = result.relationships.filter(r => r.type === 'scanlation_group');
+            if(groups.length > 0) {
+                title += ' [' + groups.map(group => groupMap[group.id]).join(', ') + ']';
+            }
+            // is any group for this chapter not in the list of licensed groups?
+            if(groups.length === 0 || groups.some(group => !this.licensedChapterGroups.includes(group.id))) {
                 return {
-                    id: chapter.id,
+                    id: result.id,
                     title: title.trim(),
-                    language: chapter.language
+                    language: result.attributes.translatedLanguage
                 };
-            });
+            } else {
+                return false;
+            }
+        }).filter(chapter => chapter);
     }
 
     async _getPages(chapter) {
-        const uri = new URL(`chapter/${chapter.id}`, this.api);
-        uri.searchParams.set('saver', 0);
-        const request = new Request(uri);
+        const uri = new URL('/at-home/server/' + chapter.id, this.api);
+        const request = new Request(uri, this.requestOptions);
         const data = await this.fetchJSON(request, 3);
-        return data.data.pages.map(file => this.createConnectorURI({
-            networkNode: data.data.server, // e.g. 'https://foo.bar.mangadex.network:44300/token/data/'
-            serverFallback: data.data.serverFallback, // e.g. 'https://s2.mangadex.org/data/'
-            hash: data.data.hash, // e.g. '1c41e55e32b21321ff11907469e5c323'
-            file: file // e.g. '123.png'
+        return data.chapter.data.map(file => this.createConnectorURI({
+            networkNode: data.baseUrl + '/data/', // e.g. 'https://foo.bar.mangadex.network:44300/token/data/'
+            hash: data.chapter.hash, // e.g. '1c41e55e32b21321ff11907469e5c323'
+            file: file // e.g. 'x1-216a1435.png'
         }));
     }
 
     async _handleConnectorURI(payload) {
         const servers = [
-            this.serverPrimary,
-            this.serverSecondary,
             ...this.serverNetwork,
-            payload.serverFallback,
             payload.networkNode
         ];
         for(let node of servers) {
             try {
                 const uri = new URL(node + payload.hash + '/' + payload.file);
-                let request = new Request(uri, this.requestOptions);
-                let response = await fetch(request);
-                if(response.status === 200) {
-                    let data = await response.blob();
-                    return this._blobToBuffer(data);
+                const request = new Request(uri, this.requestOptions);
+                const response = await fetch(request);
+                if(response.ok && response.status === 200) {
+                    const data = await response.blob();
+                    if(response.headers.get('content-length') == data.size || await createImageBitmap(data)) {
+                        return this._blobToBuffer(data);
+                    }
                 }
             } finally {/**/}
         }
-        throw new Error('');
+        throw new Error('Failed to download image file from MangaDex@Home network!\n' + payload.networkNode);
+    }
+
+    async _getScanlationGroups(chapters) {
+        const groupList = {};
+        let groupIDs = !chapters ? {} : chapters.reduce((accumulator, chapter) => {
+            const ids = chapter.relationships.filter(r => r.type === 'scanlation_group').map(g => g.id);
+            return accumulator.concat(ids);
+        }, []);
+        groupIDs = Array.from(new Set(groupIDs));
+        if(groupIDs.length > 0) {
+            await this.wait(this.config.throttleRequests.value);
+            const uri = new URL('/group', this.api);
+            uri.search = new URLSearchParams([ [ 'limit', 100 ], ...groupIDs.map(id => [ 'ids[]', id ]) ]).toString();
+            const request = new Request(uri, this.requestOptions);
+            const {data} = await this.fetchJSON(request, 3);
+            data.forEach(result => groupList[result.id] = result.attributes.name || 'unknown');
+        }
+        return groupList;
     }
 
     _padNum(number, places) {
@@ -150,25 +231,11 @@ export default class MangaDex extends Connector {
          * '17-123456789'
          */
         let range = number.split('-');
-        range = range.map( chapter => {
+        range = range.map(chapter => {
             chapter = chapter.trim();
             let digits = chapter.split('.')[0].length;
             return '0'.repeat(Math.max(0, places - digits)) + chapter;
-        } );
+        });
         return range.join('-');
-    }
-
-    // Try to convert old manga IDs to the latest version (e.g. when stored as bookmark).
-    _migratedMangaID(mangaID) {
-        // /manga/8466/darwin-s-game
-        let v1 = mangaID.match(/^\/manga\/(\d+)\/.*$/);
-        if(v1) {
-            return v1[1];
-        }
-        let v2 = mangaID.match(/^\d+$/);
-        if(v2) {
-            return v2[0];
-        }
-        return mangaID;
     }
 }

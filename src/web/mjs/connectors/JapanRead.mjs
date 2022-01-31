@@ -7,7 +7,7 @@ export default class JapanRead extends Connector {
         super();
         super.id = 'japanread';
         super.label = 'Japanread';
-        this.tags = [ 'manga', 'webtoon', 'french' ];
+        this.tags = ['manga', 'webtoon', 'french'];
         this.url = 'https://www.japanread.cc';
     }
 
@@ -45,9 +45,9 @@ export default class JapanRead extends Connector {
         });
     }
 
-    async _getChapters(manga) {
+    async _getChaptersFromPage(manga, page) {
         const uri = new URL(manga.id, this.url);
-        const request = new Request(uri, this.requestOptions);
+        const request = new Request(`${uri}?page=${page}`, this.requestOptions);
         const data = await this.fetchDOM(request, 'div.chapter-container div.chapter-row a.text-truncate');
         return data.map(element => {
             return {
@@ -57,17 +57,47 @@ export default class JapanRead extends Connector {
         });
     }
 
+    async _getChapters(manga) {
+        let chapList = [];
+        for (let page = 1, run = true; run; page++) {
+            let chapters = await this._getChaptersFromPage(manga, page);
+            chapters.length ? chapList.push(...chapters) : run = false;
+        }
+        return chapList;
+    }
+
     async _getPages(chapter) {
+        const script = `
+            new Promise(async (resolve, reject) => {
+                if(document.querySelector('form#captcha-form')) {
+                    return reject(new Error('The chapter is protected by reCaptcha! Use the manual website interaction to solve the Captcha for an arbitrary chapter before downloading any other chapter from this website.'));
+                }
+                const info = document.querySelector('head meta[data-chapter-id]');
+                const uri = new URL('/api/?type=chapter&id=' + info.dataset.chapterId, window.location.origin);
+                const customHeaders = {
+                    headers: {"a":"Math.random().toString(16)"}
+                };
+                const response = await fetch(uri.href,customHeaders);
+                const data = await response.json();
+                debugger
+                const images = data.page_array.map(page => new URL(data.baseImagesUrl + '/' + page, uri.href).href);
+                resolve(images);
+            });
+        `;
         let uri = new URL(chapter.id, this.url);
         let request = new Request(uri, this.requestOptions);
-        const id = await this.fetchDOM(request, 'head meta[data-chapter-id]');
-        uri = new URL('/api/?type=chapter&id=' + id[0].dataset.chapterId, this.url);
-        request = new Request(uri, {
-            headers: {
-                'X-Requested-With': 'XMLHttpRequest'
-            }
-        });
-        let data = await this.fetchJSON(request);
-        return data.page_array.map( page => this.getAbsolutePath( data.baseImagesUrl + '/' + page, request.url ) );
+        const data = await Engine.Request.fetchUI(request, script);
+        return data.map(image => this.createConnectorURI({
+            url: image,
+            referer: request.url
+        }));
+    }
+
+    async _handleConnectorURI(payload) {
+        let request = new Request(payload.url, this.requestOptions);
+        request.headers.set('x-referer', payload.referer);
+        let response = await fetch(request);
+        let data = await response.blob();
+        return this._blobToBuffer(data);
     }
 }

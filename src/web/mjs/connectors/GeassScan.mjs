@@ -6,7 +6,7 @@ export default class GeassScan extends WordPressMadara {
         super();
         super.id = 'geassscan';
         super.label = 'Geass Scan';
-        this.tags = [ 'webtoon', 'portuguese' ];
-        this.url = 'https://geassscan.xyz';
+        this.tags = [ 'manga', 'webtoon', 'portuguese', 'scanlation' ];
+        this.url = 'https://geassscan.net/';
     }
 }

@@ -1,6 +1,6 @@
-import WordPressMadara from './templates/WordPressMadara.mjs';
+import WordPressMadaraNovel from './templates/WordPressMadaraNovel.mjs';
 
-export default class ArgosScan extends WordPressMadara {
+export default class ArgosScan extends WordPressMadaraNovel {
     constructor() {
         super();
         super.id = 'argosscan';
@@ -8,5 +8,7 @@ export default class ArgosScan extends WordPressMadara {
         this.tags = [ 'manga', 'high-quality', 'portuguese', 'scanlation' ];
         this.url = 'https://argosscan.com';
         this.language = 'pt';
+
+        this.novelObstaclesQuery = 'div#text-chapter-toolbar, div.ad, div.go-to-top';
     }
 }
