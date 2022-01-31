@@ -61,6 +61,6 @@ do
   wait
 done
 echo "Finished templates"
-#LC_ALL=C sort -t" " -k4 -r ${OUTFILE}.tmp > ${OUTFILE}
-#rm -rf ${OUTFILE}.tmp
-#cat ${OUTFILE}
+LC_ALL=C sort -t" " -k4 -r ${OUTFILE}.tmp > ${OUTFILE}
+rm -rf ${OUTFILE}.tmp
+cat ${OUTFILE}
